@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+aiogram>=3.0.0
+openai
+jinja2
+python-multipart
