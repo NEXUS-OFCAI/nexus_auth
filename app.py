@@ -2,79 +2,82 @@ import os
 import hashlib
 import secrets
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Header, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 
-app = FastAPI(title="NEXUS License Management System")
-templates = Jinja2Templates(directory="templates")
+app = FastAPI(title="NEXUS Core Headless Auth")
 
-# Чтение переменных из панели Render (пароль теперь сверяется внутри кода)
+# Считываем настройки из панели Render. По умолчанию пароль: BERSERK2026
 ADMIN_PASSWORD = os.getenv("NEXUS_ADMIN_TOKEN", "BERSERK2026")
-SALT = os.getenv("NEXUS_SALT", "NEXUS_CORE_SALT_2026")
+SALT = os.getenv("NEXUS_SALT", "NEXUS_SYSTEM_SALT_2026")
 
+# Хранилища данных в оперативной памяти сервера
 db_premium_keys = {}
 ip_audit_log = []
 
 def hash_key(key: str) -> str:
     return hashlib.sha256((key + SALT).encode()).hexdigest()
 
-# 1. ГЛАВНАЯ СТРАНИЦА
-@app.get("/", response_class=HTMLResponse)
-async def public_index(request: Request):
-    return "<h3>NEXUS Auth Service is running successfully on Render.com</h3>"
+# 1. СТАТУС СЕРВЕРА (ГЛАВНАЯ СТРАНИЦА)
+@app.get("/")
+def health_check():
+    return {"status": "online", "system": "NEXUS Core Auth API"}
 
-# 2. АДМИНКА (Вход через безопасный параметр ?key=)
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_panel(request: Request, key: str = None):
-    """Вход строго по ссылке: /admin?key=BERSERK2026"""
-    if key != ADMIN_PASSWORD:
-        return HTMLResponse(content="<h2>403 Forbidden: Доступ заблокирован. Неверный ключ администратора.</h2>", status_code=403)
+# 2. ГЕНЕРАЦИЯ КЛЮЧЕЙ ЧЕРЕЗ ССЫЛКУ (Вместо админки)
+# URL-формат: /generate?user=ИМЯ&token=BERSERK2026
+@app.get("/generate")
+def generate_new_license(user: str = None, token: str = None):
+    if not user or not token:
+        raise HTTPException(status_code=400, detail="Missing fields 'user' or 'token'")
+        
+    if token != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid token")
+        
+    # Создаем уникальный ключ
+    raw_key = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
+    license_key = f"NEXUS-{raw_key}"
     
-    return templates.TemplateResponse("admin.html", {
-        "request": request, 
-        "admin_password": ADMIN_PASSWORD, 
-        "generated_key": None,
-        "logs": ip_audit_log[-20:]
-    })
-
-# 3. ОБРАБОТЧИК ФОРМЫ
-@app.post("/admin/generate", response_class=HTMLResponse)
-async def admin_generate_key(request: Request, user_id: str = Form(...), admin_pass: str = Form(...)):
-    if admin_pass != ADMIN_PASSWORD:
-        raise HTTPException(status_code=403, detail="Действие отклонено: сессия устарела")
-    
-    # Генерация ключа лицензии
-    raw_token = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
-    license_key = f"NEXUS-{raw_token}"
-    
+    # Хешируем и сохраняем владельца
     hashed = hash_key(license_key)
     db_premium_keys[hashed] = {
-        "user_id": user_id,
+        "user_id": user,
         "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
     
-    return templates.TemplateResponse("admin.html", {
-        "request": request, 
-        "admin_password": ADMIN_PASSWORD, 
-        "generated_key": license_key,
-        "user_id": user_id,
-        "logs": ip_audit_log[-20:]
-    })
+    return {
+        "status": "success",
+        "message": f"License created for {user}",
+        "license_key": license_key
+    }
 
-# 4. ПРОВЕРКА ДЛЯ ВАШИХ ПРОГРАММ
+# 3. ПРОСМОТР ЛОГОВ ПОДКЛЮЧЕНИЙ IP ЧЕРЕЗ ССЫЛКУ
+# URL-формат: /logs?token=BERSERK2026
+@app.get("/logs")
+def view_telemetry_logs(token: str = None):
+    if token != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid token")
+    return {
+        "total_connections_checked": len(ip_audit_log),
+        "recent_logs": ip_audit_log[-30:] # Последние 30 проверок
+    }
+
+# 4. ПРОВЕРКА ДЛЯ ВАШИХ ПРОГРАММ-КЛИЕНТОВ
+# URL-формат: /check?key=КЛЮЧ&ip=IP_АДРЕС
 @app.get("/check")
-def check_license(key: str, ip: str, request: Request):
+def check_client_license(key: str, ip: str):
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Логгируем абсолютно каждый запрос (USER CHECK телеметрия)
     log_entry = {"timestamp": timestamp, "requested_key": key, "client_ip": ip}
     ip_audit_log.append(log_entry)
     
+    # А. Проверка на Мастер-Ключ создателя
     if key == "nexus_master_owner_key":
         return {"status": "success", "role": "owner", "user_id": "BERSERK"}
         
+    # Б. Проверка динамических ключей
     hashed = hash_key(key)
     if hashed in db_premium_keys:
         return {"status": "success", "role": "premium", "user_id": db_premium_keys[hashed]["user_id"]}
         
-    return JSONResponse(status_code=401, content={"status": "failed", "detail": "Invalid Access Key"})
+    return JSONResponse(status_code=401, content={"status": "failed", "detail": "🔒 Access Denied: Invalid Key"})
