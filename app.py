@@ -77,3 +77,4 @@ def check_license(key: str, ip: str, request: Request):
         return {"status": "success", "role": "premium", "user_id": db_premium_keys[hashed]["user_id"]}
         
     return JSONResponse(status_code=401, content={"status": "failed", "detail": "Invalid Access Key"})
+
