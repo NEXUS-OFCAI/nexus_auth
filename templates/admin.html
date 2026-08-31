@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>WHYEN AI - Control Console</title>
+    <style>
+        body { font-family: sans-serif; background: #090d16; color: #f1f5f9; padding: 40px; }
+        .box { background: #111827; padding: 25px; border-radius: 8px; max-width: 500px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        h2 { color: #38bdf8; margin-top: 0; }
+        input { width: 100%; padding: 10px; margin: 10px 0; background: #1f2937; border: 1px solid #374151; color: #fff; border-radius: 4px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background: #0284c7; border: none; color: #fff; font-weight: bold; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0369a1; }
+        .success { color: #4ade80; background: #064e3b; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 16px; margin-top: 10px; }
+        .log-box { background: #1f2937; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 12px; max-width: 800px; }
+        .log-entry { border-bottom: 1px solid #374151; padding: 5px 0; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <h2>WHYEN AI Generation Panel</h2>
+        <form method="POST" action="/admin/generate">
+            <label>UserID / Имя сотрудника:</label>
+            <input type="text" name="user_id" placeholder="например, manager_alpha" required>
+            <input type="hidden" name="admin_pass" value="{{ admin_password }}">
+            <button type="submit">Сгенерировать Premium Ключ</button>
+        </form>
+
+        {% if generated_key %}
+        <div class="success">
+            <strong>Ключ успешно создан для {{ user_id }}:</strong><br>
+            <span style="user-select: all; font-size: 18px;">{{ generated_key }}</span>
+        </div>
+        {% endif %}
+    </div>
+
+    <div style="margin-top: 40px;">
+        <h3 style="color: #94a3b8;">Логи сетевого аудита (USER CHECK Framework)</h3>
+        <div class="log-box">
+            {% if logs %}
+                {% for log in logs %}
+                <div class="log-entry">
+                    <span style="color: #a78bfa;">[{{ log.timestamp }}]</span> 
+                    IP: <span style="color: #f43f5e;">{{ log.client_ip }}</span> 
+                    запросил ключ: <span style="color: #38bdf8;">{{ log.requested_key }}</span>
+                </div>
+                {% endfor %}
+            {% else %}
+                <span style="color: #64748b;">Записи подключений отсутствуют.</span>
+            {% endif %}
+        </div>
+    </div>
+
+</body>
+</html>
