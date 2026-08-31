@@ -1,82 +1,115 @@
 import os
+import asyncio
+import logging
 import hashlib
 import secrets
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
+from openai import OpenAI
 
-app = FastAPI(
-    title="NEXUS License Server",
-    description="Микросервис авторизации и валидации лицензионных ключей для проекта NEXUS",
-    version="1.0.0"
-)
+# 1. Конфигурация логирования и переменных среды
+logging.basicConfig(level=logging.INFO)
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ADMIN_TOKEN = os.getenv("NEXUS_ADMIN_TOKEN", "super_secret_admin_pass")
+SALT = os.getenv("NEXUS_SALT", "NEXUS_SECURE_SALT_2026")
 
-# Хранилище в памяти (In-Memory) для демонстрации на Render.
-# В продакшене замените на базу данных (PostgreSQL / Redis).
-# Структура: { hashed_key: {"user_id": str, "expires_at": datetime, "is_active": bool} }
-LICENSE_DB = {}
-SALT = os.getenv("NEXUS_SALT", "NEXUS_DEFAULT_SECURE_SALT_2026")
-ADMIN_TOKEN = os.getenv("NEXUS_ADMIN_TOKEN", "nexus-super-admin-secret-token")
+# Инициализация ИИ-клиента
+ai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-api_key_header = APIKeyHeader(name="X-NEXUS-ADMIN-TOKEN", auto_error=False)
+# Инициализация FastAPI и Aiogram
+app = FastAPI()
+bot = Bot(token=TOKEN) if TOKEN else None
+dp = Dispatcher()
 
-def verify_admin(token: str = Depends(api_key_header)):
-    if not token or token != ADMIN_TOKEN:
-        raise HTTPException(status_code=403, detail="Неверный или отсутствующий административный токен")
-    return token
-
-class KeyGenerationRequest(BaseModel):
-    user_id: str
-    days_valid: int = 30
+# Имитация БД: { hashed_key: user_id }
+# Временные сессии авторизации в ТГ: { tg_user_id: True/False }
+db_keys = {}
+active_tg_sessions = {}
 
 def hash_key(key: str) -> str:
     return hashlib.sha256((key + SALT).encode()).hexdigest()
 
-@app.get("/")
-def read_root():
-    return {"status": "online", "service": "NEXUS Core Licensing Server"}
+class KeyGenRequest(BaseModel):
+    user_id: str
 
+# --- ЧАСТЬ 1: API УПРАВЛЕНИЯ КЛЮЧАМИ (ДЛЯ ВАС) ---
 @app.post("/admin/generate")
-def generate_key(req: KeyGenerationRequest, admin: str = Depends(verify_admin)):
-    """Генерация нового лицензионного ключа (Только для Администратора)"""
+def generate_key(req: KeyGenRequest, x_nexus_admin_token: str = Header(None)):
+    if x_nexus_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Неверный админ-токен")
+    
     raw_token = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
     license_key = f"NEXUS-{raw_token}"
     
-    expire_date = datetime.utcnow() + timedelta(days=req.days_valid)
     hashed = hash_key(license_key)
-    
-    LICENSE_DB[hashed] = {
-        "user_id": req.user_id,
-        "expires_at": expire_date,
-        "is_active": True
-    }
-    
-    return {
-        "license_key": license_key,
-        "user_id": req.user_id,
-        "expires_at": expire_date.isoformat(),
-        "status": "created"
-    }
+    db_keys[hashed] = req.user_id
+    return {"license_key": license_key, "owner": req.user_id}
 
-@app.get("/validate/{license_key}")
-def validate_key(license_key: str):
-    """Публичный эндпоинт для проверки ключа клиентом NEXUS"""
-    hashed = hash_key(license_key)
+@app.get("/validate/{key}")
+def validate_key(key: str):
+    hashed = hash_key(key)
+    if hashed in db_keys:
+        return {"status": "success", "user_id": db_keys[hashed]}
+    raise HTTPException(status_code=401, detail="Invalid key")
+
+# --- ЧАСТЬ 2: ЛОГИКА ТЕЛЕГРАМ-БОТА ---
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+    active_tg_sessions[user_id] = False  # Сбрасываем авторизацию при старте
+    await message.answer(
+        "**[project NEXUS]**\n"
+        "🔒 Система заблокирована.\n\n"
+        "Для активации ваших инженерных и аналитических модулей, пожалуйста, отправьте ваш лицензионный ключ в формате `NEXUS-XXXX-XXXX-...`"
+    )
+
+@dp.message()
+async def handle_messages(message: types.Message):
+    user_id = message.from_user.id
+    user_text = message.text.strip()
     
-    if hashed not in LICENSE_DB:
-        raise HTTPException(status_code=404, detail="Ключ не найден в реестре")
-        
-    data = LICENSE_DB[hashed]
+    # Если пользователь еще не авторизован — проверяем, прислал ли он ключ
+    if not active_tg_sessions.get(user_id, False):
+        if user_text.startswith("NEXUS-"):
+            hashed = hash_key(user_text)
+            if hashed in db_keys:
+                active_tg_sessions[user_id] = True
+                await message.answer("**[project NEXUS]**\n✅ Авторизация успешна. Доступ к ИИ-ассистенту и макрокомандам открыт!")
+            else:
+                await message.answer("❌ Ошибка: Ключ не найден в реестре или аннулирован.")
+        else:
+            await message.answer("🔒 Доступ отклонен. Пожалуйста, введите валидный ключ доступа.")
+        return
+
+    # Если авторизован — перенаправляем запрос в OpenAI (NEXUS Prompt)
+    if not ai_client:
+        await message.answer("⚠️ Ошибка конфигурации сервера: отсутствует API ключ нейросети.")
+        return
+
+    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
-    if not data["is_active"]:
-        raise HTTPException(status_code=403, detail="Лицензия деактивирована администратором")
-        
-    if datetime.utcnow() > data["expires_at"]:
-        raise HTTPException(status_code=403, detail="Срок действия лицензии истек")
-        
-    return {
-        "valid": True,
-        "user_id": data["user_id"],
-        "expires_at": data["expires_at"].isoformat()
-    }
+    try:
+        response = ai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "# NEXUS: Advanced Analytical System Prompt. Вы общаетесь со старшим инженером."},
+                {"role": "user", "content": user_text}
+            ]
+        )
+        await message.answer(response.choices.message.content)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка генерации ответа: {str(e)}")
+
+# --- ИНИЦИАЛИЗАЦИЯ И ЗАПУСК ---
+@app.on_event("startup")
+async def on_startup():
+    if bot:
+        # Запуск бота в фоновом режиме (Polling) параллельно с FastAPI веб-сервером
+        asyncio.create_task(dp.start_polling(bot))
+
+@app.get("/")
+def health_check():
+    return {"status": "NEXUS Core is online"}
