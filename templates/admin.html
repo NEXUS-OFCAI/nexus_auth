@@ -24,7 +24,7 @@
             <input type="text" name="user_id" placeholder="например, user_01" required>
             <input type="hidden" name="admin_pass" value="{{ admin_password }}">
             <button type="submit">Сгенерировать Ключ</button>
-        </form>
+        <form method="POST" action="/admin/generate">
 
         {% if generated_key %}
         <div class="success">
