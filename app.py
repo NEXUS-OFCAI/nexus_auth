@@ -10,7 +10,7 @@ from pydantic import BaseModel
 app = FastAPI(title="NEXUS License Management System")
 templates = Jinja2Templates(directory="templates")
 
-# Чтение переменных из Render
+# Чтение переменных из панели Render (с дефолтными значениями)
 ADMIN_PASSWORD = os.getenv("NEXUS_ADMIN_TOKEN", "BERSERK2026")
 SALT = os.getenv("NEXUS_SALT", "NEXUS_CORE_SALT_2026")
 
@@ -20,12 +20,12 @@ ip_audit_log = []
 def hash_key(key: str) -> str:
     return hashlib.sha256((key + SALT).encode()).hexdigest()
 
-# ГЛАВНАЯ СТРАНИЦА
+# 1. ГЛАВНАЯ СТРАНИЦА (ЗДЕСЬ ВСЁ ОК)
 @app.get("/", response_class=HTMLResponse)
 async def public_index(request: Request):
     return "<h3>NEXUS Auth Service is running successfully on Render.com</h3>"
 
-# ИСПРАВЛЕННЫЙ МАРШРУТ АДМИНКИ (Имя 'pass' заменено на 'password')
+# 2. ИСПРАВЛЕННАЯ АДМИНКА (Переменная 'password' везде названа одинаково)
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel(request: Request, password: str = None):
     """Вход строго по ссылке: /admin?password=BERSERK2026"""
@@ -39,12 +39,13 @@ async def admin_panel(request: Request, password: str = None):
         "logs": ip_audit_log[-20:]
     })
 
-# ОБРАБОТЧИК ФОРМЫ
+# 3. ОБРАБОТЧИК ФОРМЫ (ИСПРАВЛЕН АДРЕС)
 @app.post("/admin/generate", response_class=HTMLResponse)
 async def admin_generate_key(request: Request, user_id: str = Form(...), admin_pass: str = Form(...)):
     if admin_pass != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Действие отклонено: сессия устарела")
     
+    # Генерация ключа
     raw_token = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
     license_key = f"NEXUS-{raw_token}"
     
@@ -62,7 +63,7 @@ async def admin_generate_key(request: Request, user_id: str = Form(...), admin_p
         "logs": ip_audit_log[-20:]
     })
 
-# ПРОВЕРКА ЛИЦЕНЗИЙ
+# 4. ПРОВЕРКА ДЛЯ КЛИЕНТОВ
 @app.get("/check")
 def check_license(key: str, ip: str, request: Request):
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -77,4 +78,3 @@ def check_license(key: str, ip: str, request: Request):
         return {"status": "success", "role": "premium", "user_id": db_premium_keys[hashed]["user_id"]}
         
     return JSONResponse(status_code=401, content={"status": "failed", "detail": "Invalid Access Key"})
-
